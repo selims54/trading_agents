@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tradingv4 dashboard</title>
+<style>
+:root {
+  --teal: #0f766e; --navy: #1e3a5f; --bronze: #a16207; --amber: #f59e0b;
+  --ink: #111111; --muted: #4b5563; --paper: #f4f8fc; --grid: rgba(30,58,95,0.06);
+  --panel: #ffffff; --line: rgba(15,118,110,0.55);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  color: var(--ink);
+  background-color: var(--paper);
+  background-image:
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: 24px 24px;
+  font-family: "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  line-height: 1.45;
+}
+header.top {
+  display: flex; align-items: baseline; gap: 16px;
+  padding: 20px 32px 4px; color: var(--navy);
+}
+header.top h1 { font-size: 20px; margin: 0; letter-spacing: 0.02em; }
+header.top .hint { font-size: 12px; color: var(--muted); }
+main { display: grid; gap: 24px; padding: 16px 32px 48px; max-width: 1200px; }
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 20px 24px 24px;
+}
+.panel h2 { margin: 0; font-size: 18px; color: var(--navy); }
+.panel .sub { margin: 4px 0 16px; font-size: 13px; color: var(--muted); }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid rgba(15,118,110,0.15); vertical-align: top; }
+table.kv th { width: 210px; color: var(--teal); font-weight: 600; }
+tbody tr:hover, table.kv tr:hover { background: rgba(15,118,110,0.06); }
+.chart { width: 100%; height: 420px; }
+
+/* presenter: ring and highlighter */
+#ring {
+  position: fixed; left: 0; top: 0; width: 38px; height: 38px; margin: -19px 0 0 -19px;
+  border: 3px solid var(--amber); border-radius: 50%; pointer-events: none;
+  z-index: 1000; opacity: 0; transition: opacity 0.15s;
+}
+#ink { position: fixed; inset: 0; pointer-events: none; z-index: 999; }
+body.drawing { user-select: none; cursor: crosshair; }
+
+/* presenter: one panel at a time */
+body.present header.top, body.present main > .panel { display: none; }
+body.present main > .panel.on {
+  display: block; position: fixed; margin: 0; width: 960px;
+  transform-origin: top left; z-index: 10;
+  box-shadow: 0 4px 24px rgba(30,58,95,0.10);
+}
+body.present { overflow: hidden; }
+</style>
+
+</head>
+<body>
+<header class="top"><h1>tradingv4</h1>
+<span class="hint">P present · ←/→ step · Esc back · Shift+drag highlight</span></header>
+<main>
+<!-- 00_home.html -->
+<section class="panel" id="home">
+  <h2>tradingv4</h2>
+  <p class="sub">2026-11-17 · my settings, read from CLAUDE.md</p>
+  <table class="kv">
+<tr><th>Bar size</th><td>daily. A &quot;day&quot; in these rules means one bar, so with hourly bars the 200-day line is the 200-bar line.</td></tr>
+<tr><th>Data</th><td>from 2007-06-01 through 2026-10-23, from Yahoo Finance through the yfinance library, adjusted for splits and dividends. yfinance treats the end date as exclusive, so pass the day after.</td></tr>
+<tr><th>Training</th><td>2008-07-01 to 2021-12-31. Locked test: 2022-01-02 to 2026-10-23.</td></tr>
+<tr><th>Study tickers</th><td>SPY QQQ IWM DIA XLK XLF XLE XLV XLI XLY XLP XLU XLB XLC XLRE TLT IEF SHY BIL GLD SLV USO DBC BTC-USD.</td></tr>
+<tr><th>Market ticker</th><td>SPY. Its uptrend and downtrend days stand for the whole market.</td></tr>
+<tr><th>Engine candidates</th><td>SPY QQQ IWM DIA.</td></tr>
+<tr><th>Safe candidates</th><td>BIL SHY IEF TLT GLD.</td></tr>
+<tr><th>Cash ticker</th><td>BIL. Idle money sits in it, and every safe candidate has to beat it.</td></tr>
+<tr><th>Studied but never traded</th><td>BTC-USD.</td></tr>
+<tr><th>Sleeve tickers</th><td>every study ticker except the cash ticker and the ones never traded.</td></tr>
+<tr><th>Cost</th><td>0.05% of the traded value on every buy and every sell.</td></tr>
+<tr><th>Starting money</th><td>$100,000.</td></tr>
+</table>
+</section>
+</main>
+<canvas id="ink"></canvas>
+<div id="ring"></div>
+<script>
+(function () {
+  // amber ring follows the mouse
+  const ring = document.getElementById('ring');
+  window.addEventListener('mousemove', e => {
+    ring.style.transform = `translate(${e.clientX}px, ${e.clientY}px)`;
+    ring.style.opacity = 1;
+  });
+  document.addEventListener('mouseleave', () => ring.style.opacity = 0);
+
+  // shift + drag draws an amber highlighter line that fades ~2 s after release
+  const canvas = document.getElementById('ink');
+  const ctx = canvas.getContext('2d');
+  const strokes = [];
+  let current = null;
+  const HOLD = 1400, FADE = 600;
+  function size() {
+    const r = window.devicePixelRatio || 1;
+    canvas.width = innerWidth * r; canvas.height = innerHeight * r;
+    canvas.style.width = innerWidth + 'px'; canvas.style.height = innerHeight + 'px';
+    ctx.setTransform(r, 0, 0, r, 0, 0);
+  }
+  size(); window.addEventListener('resize', size);
+  window.addEventListener('mousedown', e => {
+    if (!e.shiftKey || e.button !== 0) return;
+    e.preventDefault(); e.stopPropagation();
+    current = { pts: [[e.clientX, e.clientY]], released: null };
+    strokes.push(current); document.body.classList.add('drawing');
+  }, true);
+  window.addEventListener('mousemove', e => {
+    if (current) current.pts.push([e.clientX, e.clientY]);
+  }, true);
+  window.addEventListener('mouseup', () => {
+    if (!current) return;
+    current.released = performance.now(); current = null;
+    document.body.classList.remove('drawing');
+  }, true);
+  (function draw(now) {
+    ctx.clearRect(0, 0, innerWidth, innerHeight);
+    for (let i = strokes.length - 1; i >= 0; i--) {
+      const s = strokes[i];
+      let a = 1;
+      if (s.released !== null) {
+        const t = now - s.released;
+        if (t > HOLD + FADE) { strokes.splice(i, 1); continue; }
+        if (t > HOLD) a = 1 - (t - HOLD) / FADE;
+      }
+      ctx.strokeStyle = `rgba(245,158,11,${0.45 * a})`;
+      ctx.lineWidth = 14; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      ctx.beginPath();
+      s.pts.forEach(([x, y], j) => j ? ctx.lineTo(x, y) : ctx.moveTo(x, y));
+      if (s.pts.length === 1) ctx.lineTo(s.pts[0][0] + 0.1, s.pts[0][1]);
+      ctx.stroke();
+    }
+    requestAnimationFrame(draw);
+  })(performance.now());
+
+  // P: one panel at a time, scaled to fill the screen,
+  // bottom-right 25% of width x 30% of height kept empty for the camera
+  const panels = Array.from(document.querySelectorAll('main > .panel'));
+  let idx = -1;
+  const PAD = 24;
+  function resizeCharts(el) {
+    if (window.Plotly) el.querySelectorAll('.js-plotly-plot').forEach(c => Plotly.Plots.resize(c));
+  }
+  function place() {
+    const p = panels[idx];
+    panels.forEach(x => { x.classList.remove('on'); x.style.transform = ''; });
+    p.classList.add('on');
+    resizeCharts(p);
+    const w = p.offsetWidth, h = p.offsetHeight;
+    const W = innerWidth, H = innerHeight;
+    // two rectangles that avoid the camera corner: full width x top 70%, or left 75% x full height
+    const areas = [
+      { x: 0, y: 0, w: W, h: H * 0.70 },
+      { x: 0, y: 0, w: W * 0.75, h: H },
+    ].map(a => ({ ...a, s: Math.min((a.w - 2 * PAD) / w, (a.h - 2 * PAD) / h) }));
+    const a = areas[0].s >= areas[1].s ? areas[0] : areas[1];
+    const left = a.x + (a.w - w * a.s) / 2, top = a.y + (a.h - h * a.s) / 2;
+    p.style.left = left + 'px'; p.style.top = top + 'px';
+    p.style.transform = `scale(${a.s})`;
+  }
+  function enter() {
+    if (!panels.length) return;
+    if (idx < 0) idx = 0;
+    document.body.classList.add('present'); place();
+  }
+  function leave() {
+    document.body.classList.remove('present');
+    panels.forEach(x => { x.classList.remove('on'); x.style.transform = x.style.left = x.style.top = ''; resizeCharts(x); });
+    if (idx >= 0) panels[idx].scrollIntoView({ block: 'start' });
+  }
+  const presenting = () => document.body.classList.contains('present');
+  window.addEventListener('keydown', e => {
+    if (e.target.closest && e.target.closest('input, textarea, select, [contenteditable]')) return;
+    if ((e.key === 'p' || e.key === 'P') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      presenting() ? leave() : enter(); e.preventDefault();
+    } else if (presenting() && ['ArrowRight', 'ArrowDown', 'PageDown', ' '].includes(e.key)) {
+      idx = Math.min(panels.length - 1, idx + 1); place(); e.preventDefault();
+    } else if (presenting() && ['ArrowLeft', 'ArrowUp', 'PageUp'].includes(e.key)) {
+      idx = Math.max(0, idx - 1); place(); e.preventDefault();
+    } else if (e.key === 'Escape' && presenting()) {
+      leave(); e.preventDefault();
+    }
+  });
+  window.addEventListener('resize', () => { if (presenting()) place(); });
+})();
+</script>
+</body>
+</html>

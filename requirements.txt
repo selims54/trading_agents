@@ -1,0 +1,15 @@
+# Data
+yfinance
+pandas
+numpy
+pyarrow
+
+# Config
+pyyaml
+
+# Charts (plotly for the dashboard, matplotlib for static images)
+plotly
+matplotlib
+
+# Tests
+pytest
